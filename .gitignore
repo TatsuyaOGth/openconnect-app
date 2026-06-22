@@ -1,0 +1,18 @@
+# .NET build artifacts
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# Publish output
+publish/
+
+# macOS
+.DS_Store
+
+# Rider
+.idea/
+
+# VS Code
+.vscode/
