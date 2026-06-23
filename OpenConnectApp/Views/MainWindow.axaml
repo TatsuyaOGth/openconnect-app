@@ -1,0 +1,23 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:OpenConnectApp.ViewModels"
+        xmlns:views="using:OpenConnectApp.Views"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="600" d:DesignHeight="500"
+        x:Class="OpenConnectApp.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Title="OpenConnect App"
+        Width="600" Height="500"
+        MinWidth="480" MinHeight="400">
+
+    <TabControl SelectedIndex="{Binding SelectedTabIndex}">
+        <TabItem Header="接続先一覧">
+            <views:ConnectionListView DataContext="{Binding ConnectionListVM}"/>
+        </TabItem>
+        <TabItem Header="設定">
+            <views:SettingsView DataContext="{Binding SettingsVM}"/>
+        </TabItem>
+    </TabControl>
+
+</Window>

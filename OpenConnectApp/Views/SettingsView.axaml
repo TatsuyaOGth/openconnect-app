@@ -1,0 +1,96 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:OpenConnectApp.ViewModels"
+             xmlns:conv="using:OpenConnectApp.Converters"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             x:Class="OpenConnectApp.Views.SettingsView"
+             x:DataType="vm:SettingsViewModel">
+
+    <UserControl.Resources>
+        <conv:InverseBoolConverter x:Key="InverseBoolConverter"/>
+    </UserControl.Resources>
+
+    <ScrollViewer>
+        <StackPanel Margin="16" Spacing="16">
+
+            <!-- 認証情報セクション -->
+            <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Padding="12">
+                <StackPanel Spacing="8">
+                    <TextBlock Text="認証情報" FontWeight="Bold" FontSize="14"/>
+
+                    <Grid ColumnDefinitions="120,*" RowDefinitions="Auto,Auto" RowSpacing="8">
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="ユーザー名:" VerticalAlignment="Center"/>
+                        <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Username}"/>
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="パスワード:" VerticalAlignment="Center"/>
+                        <TextBox Grid.Row="1" Grid.Column="1"
+                                 Text="{Binding Password}"
+                                 PasswordChar="●"/>
+                    </Grid>
+
+                    <!-- 保存方式 -->
+                    <StackPanel>
+                        <TextBlock Text="保存方式:" Margin="0,0,0,4"/>
+                        <StackPanel Orientation="Horizontal" Spacing="16">
+                            <RadioButton Content="Keychain（推奨）"
+                                         IsChecked="{Binding UseKeychain, Mode=TwoWay}"
+                                         GroupName="CredStore"/>
+                            <RadioButton Content="平文（暗号化なし）"
+                                         IsChecked="{Binding UseKeychain, Mode=TwoWay, Converter={StaticResource InverseBoolConverter}}"
+                                         GroupName="CredStore"/>
+                        </StackPanel>
+                        <TextBlock Text="⚠ パスワードが暗号化されずにディスク上に保存されます。共有環境では使用しないでください。"
+                                   IsVisible="{Binding UseKeychain, Converter={StaticResource InverseBoolConverter}}"
+                                   Foreground="OrangeRed"
+                                   TextWrapping="Wrap"
+                                   FontSize="11"
+                                   Margin="0,4,0,0"/>
+                    </StackPanel>
+
+                    <Button Content="認証情報を保存"
+                            Command="{Binding SaveCredentialsCommand}"
+                            HorizontalAlignment="Left"/>
+                </StackPanel>
+            </Border>
+
+            <!-- 実行パス設定 -->
+            <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Padding="12">
+                <StackPanel Spacing="8">
+                    <TextBlock Text="実行パス設定" FontWeight="Bold" FontSize="14"/>
+
+                    <Grid ColumnDefinitions="120,*" RowDefinitions="Auto,Auto" RowSpacing="8">
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="openconnect:" VerticalAlignment="Center"/>
+                        <TextBox Grid.Row="0" Grid.Column="1"
+                                 Text="{Binding OpenConnectPath}"
+                                 Watermark="（未検出）"/>
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="vpnc-script:" VerticalAlignment="Center"/>
+                        <TextBox Grid.Row="1" Grid.Column="1"
+                                 Text="{Binding VpncScriptPath}"
+                                 Watermark="（未検出）"/>
+                    </Grid>
+
+                    <Button Content="パス設定を保存"
+                            Command="{Binding SavePathsCommand}"
+                            HorizontalAlignment="Left"/>
+                </StackPanel>
+            </Border>
+
+            <!-- CSV管理 -->
+            <Border BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Padding="12">
+                <StackPanel Spacing="8">
+                    <TextBlock Text="接続先設定ファイル" FontWeight="Bold" FontSize="14"/>
+                    <TextBlock Text="{Binding AppDataDir, StringFormat='設定フォルダ: {0}'}"
+                               FontSize="11" Foreground="Gray"/>
+                    <Button Content="CSVを開く"
+                            Command="{Binding OpenCsvCommand}"
+                            HorizontalAlignment="Left"/>
+                </StackPanel>
+            </Border>
+
+        </StackPanel>
+    </ScrollViewer>
+
+</UserControl>

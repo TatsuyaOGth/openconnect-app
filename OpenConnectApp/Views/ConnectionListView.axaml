@@ -1,0 +1,72 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:OpenConnectApp.ViewModels"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             x:Class="OpenConnectApp.Views.ConnectionListView"
+             x:DataType="vm:ConnectionListViewModel">
+
+    <Grid RowDefinitions="Auto,*,Auto,Auto" Margin="12">
+
+        <!-- 現在の接続状態表示 -->
+        <Border Grid.Row="0"
+                Background="{DynamicResource SystemAccentColor}"
+                CornerRadius="4"
+                Padding="8,4"
+                Margin="0,0,0,8">
+            <TextBlock Text="{Binding StatusText}"
+                       Foreground="White"
+                       FontWeight="SemiBold"/>
+        </Border>
+
+        <!-- 接続先リスト -->
+        <ListBox Grid.Row="1"
+                 ItemsSource="{Binding Connections}"
+                 SelectedItem="{Binding SelectedConnection}"
+                 Margin="0,0,0,8">
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <Grid ColumnDefinitions="*,Auto">
+                        <TextBlock Grid.Column="0"
+                                   Text="{Binding DisplayName}"
+                                   VerticalAlignment="Center"
+                                   Margin="4,0"/>
+                        <TextBlock Grid.Column="1"
+                                   Text="{Binding Host}"
+                                   Foreground="Gray"
+                                   FontSize="11"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,4,0"/>
+                    </Grid>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+
+        <!-- 接続/切断ボタン行 -->
+        <StackPanel Grid.Row="2"
+                    Orientation="Horizontal"
+                    Spacing="8"
+                    Margin="0,0,0,8">
+            <Button Content="接続"
+                    Command="{Binding ConnectCommand}"
+                    IsEnabled="{Binding !IsBusy}"
+                    Width="80"/>
+            <Button Content="切断"
+                    Command="{Binding DisconnectCommand}"
+                    IsEnabled="{Binding IsConnected}"
+                    Width="80"/>
+            <ProgressBar IsIndeterminate="True"
+                         IsVisible="{Binding IsBusy}"
+                         Width="100"
+                         VerticalAlignment="Center"/>
+        </StackPanel>
+
+        <!-- 再読込ボタン -->
+        <Button Grid.Row="3"
+                Content="再読込"
+                Command="{Binding ReloadCommand}"
+                HorizontalAlignment="Left"/>
+    </Grid>
+
+</UserControl>

@@ -1,0 +1,21 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="OpenConnectApp.Views.AlertDialog"
+        Title="通知"
+        Width="400" Height="160"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner">
+
+    <Grid RowDefinitions="*,Auto" Margin="16">
+        <TextBlock Grid.Row="0"
+                   x:Name="MessageText"
+                   TextWrapping="Wrap"
+                   VerticalAlignment="Center"/>
+        <Button Grid.Row="1"
+                Content="OK"
+                Click="OkButton_Click"
+                HorizontalAlignment="Right"
+                Width="80"/>
+    </Grid>
+
+</Window>
