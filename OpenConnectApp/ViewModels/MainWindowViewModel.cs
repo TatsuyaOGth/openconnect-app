@@ -56,6 +56,16 @@ public partial class MainWindowViewModel : ViewModelBase
         SettingsVM.ConfirmPlaintextStore = _ => Task.FromResult(true); // Viewから差し替え
     }
 
+    /// <summary>アプリ終了時の後処理。接続中なら切断してからリソースを解放する。</summary>
+    public async Task ShutdownAsync()
+    {
+        if (_connectionManager.Status == ConnectionStatus.Connected
+            || _connectionManager.Status == ConnectionStatus.Connecting)
+        {
+            await _connectionManager.DisconnectAsync();
+        }
+    }
+
     private ICredentialStore CreateCredentialStore(AppConfig config)
     {
         return config.CredentialStoreType == "plaintext"

@@ -103,8 +103,7 @@ public partial class ConnectionListViewModel : ViewModelBase
 
     private bool CanConnect()
         => !IsBusy && SelectedConnection != null
-           && (_connectionManager.Status == ConnectionStatus.Disconnected
-               || _connectionManager.Status == ConnectionStatus.Connected);
+           && _connectionManager.Status == ConnectionStatus.Disconnected;
 
     [RelayCommand(CanExecute = nameof(CanDisconnect))]
     private async Task DisconnectAsync()
@@ -122,6 +121,22 @@ public partial class ConnectionListViewModel : ViewModelBase
 
     private bool CanDisconnect()
         => !IsBusy && _connectionManager.Status == ConnectionStatus.Connected;
+
+    [RelayCommand(CanExecute = nameof(CanForceDisconnect))]
+    private async Task ForceDisconnectAsync()
+    {
+        IsBusy = true;
+        try
+        {
+            await _connectionManager.ForceDisconnectAsync();
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private bool CanForceDisconnect() => !IsBusy;
 
     private void OnConnectionStateChanged(object? sender, ConnectionStateChangedEventArgs e)
     {
@@ -149,6 +164,7 @@ public partial class ConnectionListViewModel : ViewModelBase
     {
         ConnectCommand.NotifyCanExecuteChanged();
         DisconnectCommand.NotifyCanExecuteChanged();
+        ForceDisconnectCommand.NotifyCanExecuteChanged();
     }
 
     partial void OnSelectedConnectionChanged(VpnConnection? value)
