@@ -55,29 +55,65 @@ public class ConnectionManager : IDisposable
         _pollingTimer.AutoReset = true;
     }
 
-    /// <summary>起動時の接続状態復元。</summary>
+    /// <summary>起動時の接続状態復元。PIDファイルがない場合も孤立プロセスを検出する。</summary>
     public void RestoreState()
     {
         var pidPath = _configService.PidFilePath;
-        if (!File.Exists(pidPath))
+
+        if (File.Exists(pidPath))
         {
-            SetStatus(ConnectionStatus.Disconnected, null);
+            var pidText = File.ReadAllText(pidPath).Trim();
+            if (int.TryParse(pidText, out int pid) && IsProcessAlive(pid))
+            {
+                var config = _configService.Load();
+                ConnectedName = config.LastConnectedName ?? "不明";
+                SetStatus(ConnectionStatus.Connected, ConnectedName);
+                _pollingTimer.Start();
+                return;
+            }
+            TryDeletePidFile();
+        }
+
+        // PIDファイルがない/無効な場合でも openconnect プロセスが残存していれば接続状態として復元する。
+        var orphanedPid = FindOrphanedOpenConnectPid();
+        if (orphanedPid.HasValue)
+        {
+            _logger.Log($"警告: PIDファイルなしで openconnect プロセス (PID:{orphanedPid}) を検出しました。");
+            File.WriteAllText(pidPath, orphanedPid.Value.ToString());
+            var config = _configService.Load();
+            ConnectedName = config.LastConnectedName ?? "不明（孤立プロセス）";
+            SetStatus(ConnectionStatus.Connected, ConnectedName);
+            _pollingTimer.Start();
             return;
         }
 
-        var pidText = File.ReadAllText(pidPath).Trim();
-        if (int.TryParse(pidText, out int pid) && IsProcessAlive(pid))
+        SetStatus(ConnectionStatus.Disconnected, null);
+    }
+
+    /// <summary>pgrep で実行中の openconnect プロセス PID を探す（孤立プロセス検出用）。</summary>
+    private static int? FindOrphanedOpenConnectPid()
+    {
+        try
         {
-            var config = _configService.Load();
-            ConnectedName = config.LastConnectedName ?? "不明";
-            SetStatus(ConnectionStatus.Connected, ConnectedName);
-            _pollingTimer.Start();
+            using var proc = new Process();
+            proc.StartInfo = new ProcessStartInfo("pgrep", "openconnect")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            };
+            proc.Start();
+            var output = proc.StandardOutput.ReadToEnd().Trim();
+            proc.WaitForExit();
+            if (proc.ExitCode == 0)
+            {
+                var firstLine = output.Split('\n')[0].Trim();
+                if (int.TryParse(firstLine, out int pid))
+                    return pid;
+            }
         }
-        else
-        {
-            TryDeletePidFile();
-            SetStatus(ConnectionStatus.Disconnected, null);
-        }
+        catch { }
+        return null;
     }
 
     public async Task ConnectAsync(
@@ -254,6 +290,35 @@ public class ConnectionManager : IDisposable
             _logger.Log("切断エラー", ex);
             SetStatus(ConnectionStatus.Disconnected, null, ex.Message);
             TryDeletePidFile();
+        }
+    }
+
+    /// <summary>
+    /// PIDファイルに依存せず pkill で openconnect を強制終了する。
+    /// 通常の切断が効かない場合や孤立プロセスが残存している場合の緊急用。
+    /// ターミナルから手動で実行する場合は: sudo pkill -INT openconnect
+    /// </summary>
+    public async Task ForceDisconnectAsync()
+    {
+        _pollingTimer.Stop();
+        SetStatus(ConnectionStatus.Disconnecting, ConnectedName);
+        _logger.Log("強制切断を実行します (pkill -INT openconnect)");
+
+        try
+        {
+            var cmd = "pkill -INT openconnect; sleep 2; pkill -TERM openconnect; true";
+            await _executor.RunAsync(cmd, TimeSpan.FromSeconds(15));
+            _logger.Log("強制切断完了");
+        }
+        catch (Exception ex)
+        {
+            _logger.Log("強制切断エラー", ex);
+        }
+        finally
+        {
+            TryDeletePidFile();
+            ConnectedName = null;
+            SetStatus(ConnectionStatus.Disconnected, null);
         }
     }
 

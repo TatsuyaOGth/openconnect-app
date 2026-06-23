@@ -53,8 +53,19 @@
                     Width="80"/>
             <Button Content="切断"
                     Command="{Binding DisconnectCommand}"
-                    IsEnabled="{Binding IsConnected}"
                     Width="80"/>
+            <Button Content="強制切断"
+                    Command="{Binding ForceDisconnectCommand}"
+                    Width="80">
+                <ToolTip.Tip>
+                    <StackPanel Spacing="4" MaxWidth="300">
+                        <TextBlock Text="VPN接続が切断できない場合に使用してください。" TextWrapping="Wrap"/>
+                        <TextBlock Text="pkill で openconnect プロセスを強制終了します。" TextWrapping="Wrap" Foreground="Gray" FontSize="11"/>
+                        <TextBlock Text="ターミナルから手動で実行する場合:" TextWrapping="Wrap" FontSize="11" Margin="0,4,0,0"/>
+                        <TextBlock Text="sudo pkill -INT openconnect" FontFamily="Monospace" FontSize="11"/>
+                    </StackPanel>
+                </ToolTip.Tip>
+            </Button>
             <ProgressBar IsIndeterminate="True"
                          IsVisible="{Binding IsBusy}"
                          Width="100"
