@@ -14,6 +14,7 @@ public partial class MainWindowViewModel : ViewModelBase
 
     public ConnectionListViewModel ConnectionListVM { get; }
     public SettingsViewModel SettingsVM { get; }
+    public LogViewModel LogVM { get; }
 
     [ObservableProperty]
     private int _selectedTabIndex;
@@ -27,7 +28,8 @@ public partial class MainWindowViewModel : ViewModelBase
         LogService logger,
         ConnectionManager connectionManager,
         ConnectionListViewModel connectionListVM,
-        SettingsViewModel settingsVM)
+        SettingsViewModel settingsVM,
+        LogViewModel logVM)
     {
         _configService = configService;
         _pathDetection = pathDetection;
@@ -35,6 +37,7 @@ public partial class MainWindowViewModel : ViewModelBase
         _connectionManager = connectionManager;
         ConnectionListVM = connectionListVM;
         SettingsVM = settingsVM;
+        LogVM = logVM;
     }
 
     /// <summary>アプリ起動時の初期化処理。</summary>

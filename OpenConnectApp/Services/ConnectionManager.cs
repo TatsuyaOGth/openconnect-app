@@ -99,6 +99,15 @@ public class ConnectionManager : IDisposable
             var command = BuildConnectCommand(connection, config, creds.Username, tmpFile);
             await _executor.RunAsync(command, ConnectTimeout);
 
+            // openconnect は接続確立後に PID ファイルを書いてからバックグラウンド化する。
+            // コマンドの成功＝接続成功とは限らないため、実際にプロセスが生存しているか確認する。
+            if (!await WaitForAliveProcessAsync(TimeSpan.FromSeconds(5)))
+            {
+                await KillByHostAsync(connection.Host);
+                throw new InvalidOperationException(
+                    "接続が確立されませんでした。openconnect が終了したか、PIDファイルが生成されませんでした。");
+            }
+
             ConnectedName = connection.DisplayName;
 
             // 最後に接続した接続先を記録
@@ -108,17 +117,18 @@ public class ConnectionManager : IDisposable
             SetStatus(ConnectionStatus.Connected, connection.DisplayName);
             _pollingTimer.Start();
             _logger.Log($"接続成功: {connection.DisplayName}");
+            LogOpenConnectOutput(10);
         }
         catch (TimeoutException ex)
         {
             _logger.Log($"接続タイムアウト: {connection.DisplayName}", ex);
-            SetStatus(ConnectionStatus.Disconnected, null, ex.Message);
+            SetStatus(ConnectionStatus.Disconnected, null, BuildErrorWithLog(ex.Message));
             await KillByHostAsync(connection.Host);
         }
         catch (Exception ex)
         {
             _logger.Log($"接続失敗: {connection.DisplayName}", ex);
-            SetStatus(ConnectionStatus.Disconnected, null, ex.Message);
+            SetStatus(ConnectionStatus.Disconnected, null, BuildErrorWithLog(ex.Message));
         }
         finally
         {
@@ -180,16 +190,15 @@ public class ConnectionManager : IDisposable
         }
     }
 
-    private static string BuildConnectCommand(
+    private string BuildConnectCommand(
         VpnConnection conn,
         AppConfig config,
         string username,
         string tmpFile)
     {
         var q = OsascriptPrivilegedExecutor.ShellQuote;
-        var pidFile = q(Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            "Library", "Application Support", "OpenConnectApp", "openconnect.pid"));
+        var pidFile = q(_configService.PidFilePath);
+        var logFile = q(_configService.OpenConnectLogPath);
 
         var sb = new System.Text.StringBuilder();
         sb.Append($"cat {q(tmpFile)} | {q(config.OpenConnectPath ?? "/opt/homebrew/bin/openconnect")}");
@@ -206,7 +215,10 @@ public class ConnectionManager : IDisposable
             sb.Append($" --servercert={q(conn.ServerCert)}");
 
         sb.Append($" {q(conn.Host)}");
-        sb.Append($" ; rm -f {q(tmpFile)}");
+        // openconnectの出力をログへ取得し、終了コードを保持したまま一時ファイルを削除する。
+        // `;` で繋ぐと rm の終了コードに上書きされ openconnect の失敗を握りつぶすため rc を退避する。
+        sb.Append($" > {logFile} 2>&1");
+        sb.Append($"; rc=$?; rm -f {q(tmpFile)}; exit $rc");
 
         return sb.ToString();
     }
@@ -224,6 +236,64 @@ public class ConnectionManager : IDisposable
         {
             _logger.Log("pkill 実行エラー", ex);
         }
+    }
+
+    /// <summary>PIDファイルが生成され、プロセスが生存するまで最大 timeout 待つ。</summary>
+    private async Task<bool> WaitForAliveProcessAsync(TimeSpan timeout)
+    {
+        var pidPath = _configService.PidFilePath;
+        var deadline = DateTime.UtcNow + timeout;
+        do
+        {
+            if (File.Exists(pidPath))
+            {
+                var pidText = File.ReadAllText(pidPath).Trim();
+                if (int.TryParse(pidText, out int pid) && IsProcessAlive(pid))
+                    return true;
+            }
+            await Task.Delay(300);
+        }
+        while (DateTime.UtcNow < deadline);
+
+        return false;
+    }
+
+    /// <summary>openconnect.log の末尾を読む（接続失敗時の原因表示・GUIログ用）。</summary>
+    private string ReadOpenConnectLogTail(int maxLines = 20)
+    {
+        try
+        {
+            var path = _configService.OpenConnectLogPath;
+            if (!File.Exists(path))
+                return string.Empty;
+
+            var lines = File.ReadAllLines(path);
+            var tail = lines.Length <= maxLines ? lines : lines[^maxLines..];
+            return string.Join(Environment.NewLine, tail).Trim();
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>openconnect の出力をアプリログ（=GUIログタブ）へ書き出す。</summary>
+    private void LogOpenConnectOutput(int maxLines = 20)
+    {
+        var tail = ReadOpenConnectLogTail(maxLines);
+        if (!string.IsNullOrWhiteSpace(tail))
+            _logger.Log("openconnect 出力:\n" + tail);
+    }
+
+    /// <summary>エラーメッセージに openconnect の出力を付加し、GUIログにも記録する。</summary>
+    private string BuildErrorWithLog(string baseMessage)
+    {
+        var tail = ReadOpenConnectLogTail();
+        if (string.IsNullOrWhiteSpace(tail))
+            return baseMessage;
+
+        _logger.Log("openconnect 出力:\n" + tail);
+        return $"{baseMessage}\n\nopenconnect 出力:\n{tail}";
     }
 
     private static bool IsProcessAlive(int pid)

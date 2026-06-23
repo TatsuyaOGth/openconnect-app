@@ -55,6 +55,7 @@ public partial class App : Application
         // ViewModels
         services.AddSingleton<ConnectionListViewModel>();
         services.AddSingleton<SettingsViewModel>();
+        services.AddSingleton<LogViewModel>();
         services.AddSingleton<MainWindowViewModel>();
     }
 }

@@ -131,7 +131,7 @@ public partial class ConnectionListViewModel : ViewModelBase
 
             StatusText = e.Status switch
             {
-                ConnectionStatus.Connected => $"{e.ConnectedName} に接続中",
+                ConnectionStatus.Connected => $"{e.ConnectedName} に接続済み",
                 ConnectionStatus.Connecting => $"{e.ConnectedName} に接続中...",
                 ConnectionStatus.Disconnecting => "切断中...",
                 _ => "未接続",

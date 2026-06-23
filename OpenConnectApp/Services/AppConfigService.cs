@@ -26,6 +26,7 @@ public class AppConfigService
     public string CsvPath => Path.Combine(AppDataDir, "connections.csv");
     public string PidFilePath => Path.Combine(AppDataDir, "openconnect.pid");
     public string LogPath => Path.Combine(AppDataDir, "app.log");
+    public string OpenConnectLogPath => Path.Combine(AppDataDir, "openconnect.log");
     public string PlainCredentialPath => Path.Combine(AppDataDir, "credentials.plain.json");
 
     public AppConfig Load()
