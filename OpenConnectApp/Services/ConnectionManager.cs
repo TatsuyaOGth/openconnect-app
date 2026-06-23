@@ -101,11 +101,15 @@ public class ConnectionManager : IDisposable
 
             // openconnect は接続確立後に PID ファイルを書いてからバックグラウンド化する。
             // コマンドの成功＝接続成功とは限らないため、実際にプロセスが生存しているか確認する。
-            if (!await WaitForAliveProcessAsync(TimeSpan.FromSeconds(5)))
+            // --background は接続確立後すぐ PID を書くが、認証・トンネル確立に時間がかかる
+            // サーバもあるため猶予を長めに取り、稼働中トンネルの誤検知（→誤kill）を防ぐ。
+            if (!await WaitForAliveProcessAsync(TimeSpan.FromSeconds(10)))
             {
-                await KillByHostAsync(connection.Host);
-                throw new InvalidOperationException(
-                    "接続が確立されませんでした。openconnect が終了したか、PIDファイルが生成されませんでした。");
+                _logger.Log($"接続確立を確認できませんでした: {connection.DisplayName}");
+                SetStatus(ConnectionStatus.Disconnected, null, BuildErrorWithLog(
+                    "接続が確立されませんでした。openconnect が終了したか、PIDファイルが生成されませんでした。"));
+                await CleanupAsync(connection.Host, allowFallback: true);
+                return;
             }
 
             ConnectedName = connection.DisplayName;
@@ -121,14 +125,18 @@ public class ConnectionManager : IDisposable
         }
         catch (TimeoutException ex)
         {
+            // openconnect が接続中のまま固まっている可能性が高い。ネットワークを半設定のまま
+            // 放置すると OS 全体が固まるため、SIGINT でクリーン切断して復旧させる。
             _logger.Log($"接続タイムアウト: {connection.DisplayName}", ex);
             SetStatus(ConnectionStatus.Disconnected, null, BuildErrorWithLog(ex.Message));
-            await KillByHostAsync(connection.Host);
+            await CleanupAsync(connection.Host, allowFallback: true);
         }
         catch (Exception ex)
         {
+            // openconnect 自身が終了済みでも、PID が残っていれば念のためクリーン切断する。
             _logger.Log($"接続失敗: {connection.DisplayName}", ex);
             SetStatus(ConnectionStatus.Disconnected, null, BuildErrorWithLog(ex.Message));
+            await CleanupAsync(connection.Host, allowFallback: false);
         }
         finally
         {
@@ -223,19 +231,82 @@ public class ConnectionManager : IDisposable
         return sb.ToString();
     }
 
-    private async Task KillByHostAsync(string host)
+    /// <summary>
+    /// 接続失敗・中断時のクリーンアップ。openconnect を SIGINT でクリーンに終了させ、
+    /// vpnc-script による DNS/ルート復旧（reason=disconnect）を確実に走らせる。
+    /// いきなり SIGTERM/SIGKILL で殺すと設定途中のネットワークが復旧されず、
+    /// DNS/ルートが壊れたまま残って OS 全体が固まるため、必ず SIGINT を優先する。
+    /// </summary>
+    private async Task CleanupAsync(string host, bool allowFallback)
     {
+        var pidPath = _configService.PidFilePath;
+        int? pid = null;
+        if (File.Exists(pidPath))
+        {
+            var pidText = File.ReadAllText(pidPath).Trim();
+            if (int.TryParse(pidText, out int p))
+                pid = p;
+        }
+
+        // 1. 該当 PID が生存していれば SIGINT でクリーン切断し、終了を待つ。
+        if (pid is int target && IsProcessAlive(target))
+        {
+            try
+            {
+                _logger.Log($"クリーンアップ: kill -INT {target}（クリーン切断でネットワーク復旧）");
+                await _executor.RunAsync(
+                    $"kill -INT {OsascriptPrivilegedExecutor.ShellQuote(target.ToString())}",
+                    TimeSpan.FromSeconds(10));
+
+                if (await WaitForProcessExitAsync(target, TimeSpan.FromSeconds(10)))
+                {
+                    _logger.Log("クリーンアップ: openconnect は正常に終了しました。");
+                    TryDeletePidFile();
+                    return;
+                }
+                _logger.Log("クリーンアップ: SIGINT 後もプロセスが残存しています。");
+            }
+            catch (Exception ex)
+            {
+                _logger.Log("クリーンアップ(kill -INT)エラー", ex);
+            }
+        }
+
+        // 2. PID で対処できない/残存する場合のみ、ホスト名パターンでフォールバック。
+        //    こちらも INT を先に送り、それでも残る場合の最終手段として TERM を送る。
+        if (allowFallback)
+            await FallbackKillAsync(host);
+
+        TryDeletePidFile();
+    }
+
+    private async Task FallbackKillAsync(string host)
+    {
+        var pattern = OsascriptPrivilegedExecutor.ShellQuote($"openconnect.*{host}");
+        // 単一の特権実行にまとめて認証ダイアログの多重表示を避ける。
+        var cmd = $"pkill -INT -f {pattern}; sleep 3; pkill -TERM -f {pattern}; true";
         try
         {
-            var pattern = OsascriptPrivilegedExecutor.ShellQuote($"openconnect.*{host}");
-            var cmd = $"pkill -TERM -f {pattern}";
-            _logger.Log($"異常系後始末: {cmd}");
-            await _executor.RunAsync(cmd, TimeSpan.FromSeconds(10));
+            _logger.Log($"クリーンアップ(フォールバック): {cmd}");
+            await _executor.RunAsync(cmd, TimeSpan.FromSeconds(20));
         }
         catch (Exception ex)
         {
             _logger.Log("pkill 実行エラー", ex);
         }
+    }
+
+    /// <summary>指定 PID のプロセスが終了するまで最大 timeout 待つ。</summary>
+    private static async Task<bool> WaitForProcessExitAsync(int pid, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (!IsProcessAlive(pid))
+                return true;
+            await Task.Delay(300);
+        }
+        return !IsProcessAlive(pid);
     }
 
     /// <summary>PIDファイルが生成され、プロセスが生存するまで最大 timeout 待つ。</summary>
