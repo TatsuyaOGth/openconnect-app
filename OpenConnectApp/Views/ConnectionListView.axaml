@@ -50,7 +50,6 @@
                     Margin="0,0,0,8">
             <Button Content="接続"
                     Command="{Binding ConnectCommand}"
-                    IsEnabled="{Binding !IsBusy}"
                     Width="80"/>
             <Button Content="切断"
                     Command="{Binding DisconnectCommand}"

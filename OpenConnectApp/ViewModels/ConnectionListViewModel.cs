@@ -103,8 +103,7 @@ public partial class ConnectionListViewModel : ViewModelBase
 
     private bool CanConnect()
         => !IsBusy && SelectedConnection != null
-           && (_connectionManager.Status == ConnectionStatus.Disconnected
-               || _connectionManager.Status == ConnectionStatus.Connected);
+           && _connectionManager.Status == ConnectionStatus.Disconnected;
 
     [RelayCommand(CanExecute = nameof(CanDisconnect))]
     private async Task DisconnectAsync()
