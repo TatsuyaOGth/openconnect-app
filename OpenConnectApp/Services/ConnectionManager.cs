@@ -90,9 +90,15 @@ public class ConnectionManager : IDisposable
             var creds = await Task.Run(() => credentialStore.Load())
                 ?? throw new InvalidOperationException("認証情報が保存されていません。設定タブでユーザー名とパスワードを入力してください。");
 
-            // パスワードを一時ファイルに書き込む（権限600）
+            // パスワードを一時ファイルに書き込む（権限600）。
+            // 1行目: パスワード（--passwd-on-stdin が消費）。
+            // 2行目: "yes"。サーバ証明書が未検証（signer not found 等）の場合に openconnect が
+            //   対話的に表示する「Enter 'yes' to accept」プロンプトを stdin から自動承認する。
+            //   stdin がパスワードのみだとプロンプトが入力を読めず接続が失敗するため、後続行を供給する。
+            //   ※ 中間者攻撃の検知不能というセキュリティ低下を許容する運用方針（READMEに明記）。
+            //   証明書が信頼済み/--servercert ピン一致でプロンプトが出ない場合、この行は読まれず無害。
             tmpFile = Path.Combine(Path.GetTempPath(), $"ocgui_{Guid.NewGuid():N}.tmp");
-            File.WriteAllText(tmpFile, creds.Password);
+            File.WriteAllText(tmpFile, creds.Password + "\nyes\n");
             if (OperatingSystem.IsMacOS() || OperatingSystem.IsLinux())
                 File.SetUnixFileMode(tmpFile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
 

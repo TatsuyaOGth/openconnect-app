@@ -82,4 +82,15 @@ DisplayName,Host,UserGroup,Protocol,ServerCert
 | `Host` | ✅ | 接続先ホスト名/IP |
 | `UserGroup` | - | `--usergroup` に渡す値 |
 | `Protocol` | - | `--protocol` に渡す値（空の場合は anyconnect） |
-| `ServerCert` | - | `--servercert` に渡す値 |
+| `ServerCert` | - | `--servercert` に渡す値（証明書ピン留め。下記参照） |
+
+## サーバ証明書の扱い（セキュリティ注意）
+
+本アプリは接続時、openconnect が表示するサーバ証明書の確認プロンプト
+（`signer not found` などで「Enter 'yes' to accept」と尋ねられるケース）に対し、
+**自動的に `yes` を入力して承認します**。これにより未検証の証明書でも接続できますが、
+**中間者攻撃を検知できなくなる**というセキュリティ上のトレードオフがあります。
+
+特定の接続先だけ厳格に検証したい場合は、CSV の `ServerCert` 列に
+`pin-sha256:...`（接続失敗時のログに表示される値）を設定してください。
+ピンが一致すればプロンプト自体が出ず、不一致なら接続は拒否されます。
