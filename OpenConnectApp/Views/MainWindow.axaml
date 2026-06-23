@@ -18,6 +18,9 @@
         <TabItem Header="設定">
             <views:SettingsView DataContext="{Binding SettingsVM}"/>
         </TabItem>
+        <TabItem Header="ログ">
+            <views:LogView DataContext="{Binding LogVM}"/>
+        </TabItem>
     </TabControl>
 
 </Window>

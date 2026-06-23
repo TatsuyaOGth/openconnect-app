@@ -49,12 +49,14 @@ public partial class App : Application
         });
         services.AddSingleton<CsvService>();
         services.AddSingleton<PathDetectionService>();
+        services.AddSingleton<ServerCertService>();
         services.AddSingleton<IPrivilegedExecutor, OsascriptPrivilegedExecutor>();
         services.AddSingleton<ConnectionManager>();
 
         // ViewModels
         services.AddSingleton<ConnectionListViewModel>();
         services.AddSingleton<SettingsViewModel>();
+        services.AddSingleton<LogViewModel>();
         services.AddSingleton<MainWindowViewModel>();
     }
 }
