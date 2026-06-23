@@ -49,6 +49,7 @@ public partial class App : Application
         });
         services.AddSingleton<CsvService>();
         services.AddSingleton<PathDetectionService>();
+        services.AddSingleton<ServerCertService>();
         services.AddSingleton<IPrivilegedExecutor, OsascriptPrivilegedExecutor>();
         services.AddSingleton<ConnectionManager>();
 

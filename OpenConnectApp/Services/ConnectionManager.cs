@@ -24,9 +24,15 @@ public class ConnectionManager : IDisposable
     private readonly IPrivilegedExecutor _executor;
     private readonly AppConfigService _configService;
     private readonly LogService _logger;
+    private readonly ServerCertService _serverCertService;
     private readonly System.Timers.Timer _pollingTimer;
 
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan CertProbeTimeout = TimeSpan.FromSeconds(15);
+
+    // openconnect が証明書検証失敗時に出力する pin の抽出用。
+    private static readonly System.Text.RegularExpressions.Regex PinRegex =
+        new(@"pin-sha256:[^\s'""]+", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     public ConnectionStatus Status { get; private set; } = ConnectionStatus.Disconnected;
     public string? ConnectedName { get; private set; }
@@ -36,11 +42,13 @@ public class ConnectionManager : IDisposable
     public ConnectionManager(
         IPrivilegedExecutor executor,
         AppConfigService configService,
-        LogService logger)
+        LogService logger,
+        ServerCertService serverCertService)
     {
         _executor = executor;
         _configService = configService;
         _logger = logger;
+        _serverCertService = serverCertService;
 
         _pollingTimer = new System.Timers.Timer(7_000); // 7秒間隔
         _pollingTimer.Elapsed += (_, _) => CheckConnectionStatus();
@@ -84,50 +92,42 @@ public class ConnectionManager : IDisposable
         SetStatus(ConnectionStatus.Connecting, connection.DisplayName);
         _logger.Log($"接続試行開始: {connection.DisplayName} ({connection.Host})");
 
-        string? tmpFile = null;
         try
         {
             var creds = await Task.Run(() => credentialStore.Load())
                 ?? throw new InvalidOperationException("認証情報が保存されていません。設定タブでユーザー名とパスワードを入力してください。");
 
-            // パスワードを一時ファイルに書き込む（権限600）。
-            // 1行目: パスワード（--passwd-on-stdin が消費）。
-            // 2行目: "yes"。サーバ証明書が未検証（signer not found 等）の場合に openconnect が
-            //   対話的に表示する「Enter 'yes' to accept」プロンプトを stdin から自動承認する。
-            //   stdin がパスワードのみだとプロンプトが入力を読めず接続が失敗するため、後続行を供給する。
-            //   ※ 中間者攻撃の検知不能というセキュリティ低下を許容する運用方針（READMEに明記）。
-            //   証明書が信頼済み/--servercert ピン一致でプロンプトが出ない場合、この行は読まれず無害。
-            tmpFile = Path.Combine(Path.GetTempPath(), $"ocgui_{Guid.NewGuid():N}.tmp");
-            File.WriteAllText(tmpFile, creds.Password + "\nyes\n");
-            if (OperatingSystem.IsMacOS() || OperatingSystem.IsLinux())
-                File.SetUnixFileMode(tmpFile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            // サーバ証明書を自動ピン留め（TOFU）し、--servercert で検証することで対話プロンプトを回避する。
+            var pin = await ResolveServerCertPinAsync(connection, config);
 
-            var command = BuildConnectCommand(connection, config, creds.Username, tmpFile);
-            await _executor.RunAsync(command, ConnectTimeout);
-
-            // openconnect は接続確立後に PID ファイルを書いてからバックグラウンド化する。
-            // コマンドの成功＝接続成功とは限らないため、実際にプロセスが生存しているか確認する。
-            // --background は接続確立後すぐ PID を書くが、認証・トンネル確立に時間がかかる
-            // サーバもあるため猶予を長めに取り、稼働中トンネルの誤検知（→誤kill）を防ぐ。
-            if (!await WaitForAliveProcessAsync(TimeSpan.FromSeconds(10)))
+            // 1回目の試行。
+            if (await AttemptConnectAsync(connection, config, creds, pin))
             {
-                _logger.Log($"接続確立を確認できませんでした: {connection.DisplayName}");
-                SetStatus(ConnectionStatus.Disconnected, null, BuildErrorWithLog(
-                    "接続が確立されませんでした。openconnect が終了したか、PIDファイルが生成されませんでした。"));
-                await CleanupAsync(connection.Host, allowFallback: true);
+                MarkConnected(connection, config);
                 return;
             }
 
-            ConnectedName = connection.DisplayName;
+            // 証明書エラーで失敗した場合、openconnect が出力した本物の pin を拾って自動再ピン留めし、
+            // 1回だけ再接続する（サーバ証明書のローテーション等への自己修復）。
+            var harvested = TryHarvestPinFromLog();
+            if (harvested != null && harvested != pin)
+            {
+                _logger.Log($"警告: サーバ証明書が変わりました。自動で再ピン留めします: {connection.Host}");
+                config.ServerCertPins[connection.Host] = harvested;
+                _configService.Save(config);
 
-            // 最後に接続した接続先を記録
-            config.LastConnectedName = connection.DisplayName;
-            _configService.Save(config);
+                if (await AttemptConnectAsync(connection, config, creds, harvested))
+                {
+                    MarkConnected(connection, config);
+                    return;
+                }
+            }
 
-            SetStatus(ConnectionStatus.Connected, connection.DisplayName);
-            _pollingTimer.Start();
-            _logger.Log($"接続成功: {connection.DisplayName}");
-            LogOpenConnectOutput(10);
+            // 確立できなかった。ネットワークを半設定のまま残さないようクリーンアップする。
+            _logger.Log($"接続確立を確認できませんでした: {connection.DisplayName}");
+            SetStatus(ConnectionStatus.Disconnected, null, BuildErrorWithLog(
+                "接続が確立されませんでした。openconnect が終了したか、PIDファイルが生成されませんでした。"));
+            await CleanupAsync(connection.Host, allowFallback: true);
         }
         catch (TimeoutException ex)
         {
@@ -144,6 +144,60 @@ public class ConnectionManager : IDisposable
             SetStatus(ConnectionStatus.Disconnected, null, BuildErrorWithLog(ex.Message));
             await CleanupAsync(connection.Host, allowFallback: false);
         }
+    }
+
+    /// <summary>
+    /// 接続に使うサーバ証明書 pin を解決する。
+    /// 優先順: CSV の手動指定(ServerCert) → 保存済み(TOFU) → 未知ならTLSで取得して保存。
+    /// </summary>
+    private async Task<string?> ResolveServerCertPinAsync(VpnConnection connection, AppConfig config)
+    {
+        if (!string.IsNullOrEmpty(connection.ServerCert))
+            return connection.ServerCert;
+
+        if (config.ServerCertPins.TryGetValue(connection.Host, out var stored)
+            && !string.IsNullOrEmpty(stored))
+            return stored;
+
+        _logger.Log($"サーバ証明書を取得して自動ピン留めします: {connection.Host}");
+        var pin = await _serverCertService.GetPinSha256Async(connection.Host, CertProbeTimeout);
+        config.ServerCertPins[connection.Host] = pin;
+        _configService.Save(config);
+        _logger.Log($"ピン留め完了: {connection.Host} = {pin}");
+        return pin;
+    }
+
+    /// <summary>
+    /// 1 回分の接続試行。パスワードを一時ファイルに書き、openconnect を実行し、
+    /// プロセスの生存を確認して接続確立とみなせれば true を返す。
+    /// </summary>
+    private async Task<bool> AttemptConnectAsync(
+        VpnConnection connection, AppConfig config, (string Username, string Password) creds, string? pin)
+    {
+        string? tmpFile = null;
+        try
+        {
+            // パスワードを一時ファイルに書き込む（権限600）。--passwd-on-stdin が1行目を読む。
+            tmpFile = Path.Combine(Path.GetTempPath(), $"ocgui_{Guid.NewGuid():N}.tmp");
+            File.WriteAllText(tmpFile, creds.Password);
+            if (OperatingSystem.IsMacOS() || OperatingSystem.IsLinux())
+                File.SetUnixFileMode(tmpFile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+            var command = BuildConnectCommand(connection, config, creds.Username, tmpFile, pin);
+            await _executor.RunAsync(command, ConnectTimeout);
+
+            // openconnect は接続確立後に PID ファイルを書いてからバックグラウンド化する。
+            // コマンドの成功＝接続成功とは限らないため、実際にプロセスが生存しているか確認する。
+            // 認証・トンネル確立に時間がかかるサーバもあるため猶予を長めに取り、誤検知（→誤kill）を防ぐ。
+            return await WaitForAliveProcessAsync(TimeSpan.FromSeconds(10));
+        }
+        catch (Exception ex)
+        {
+            // openconnect 実行が失敗（証明書不一致・認証失敗・タイムアウト等）。失敗として扱い、
+            // 呼び出し側が openconnect.log から原因を判定し、必要なら自己修復する。
+            _logger.Log("接続試行が失敗しました", ex);
+            return false;
+        }
         finally
         {
             if (tmpFile != null)
@@ -151,6 +205,27 @@ public class ConnectionManager : IDisposable
                 try { File.Delete(tmpFile); } catch { }
             }
         }
+    }
+
+    /// <summary>接続成功時の確定処理（状態・記録・監視開始）。</summary>
+    private void MarkConnected(VpnConnection connection, AppConfig config)
+    {
+        ConnectedName = connection.DisplayName;
+        config.LastConnectedName = connection.DisplayName;
+        _configService.Save(config);
+
+        SetStatus(ConnectionStatus.Connected, connection.DisplayName);
+        _pollingTimer.Start();
+        _logger.Log($"接続成功: {connection.DisplayName}");
+        LogOpenConnectOutput(10);
+    }
+
+    /// <summary>openconnect.log から本物の pin-sha256 を抽出する（無ければ null）。</summary>
+    private string? TryHarvestPinFromLog()
+    {
+        var tail = ReadOpenConnectLogTail(50);
+        var m = PinRegex.Match(tail);
+        return m.Success ? m.Value : null;
     }
 
     public async Task DisconnectAsync()
@@ -208,7 +283,8 @@ public class ConnectionManager : IDisposable
         VpnConnection conn,
         AppConfig config,
         string username,
-        string tmpFile)
+        string tmpFile,
+        string? serverCertPin)
     {
         var q = OsascriptPrivilegedExecutor.ShellQuote;
         var pidFile = q(_configService.PidFilePath);
@@ -225,8 +301,9 @@ public class ConnectionManager : IDisposable
             sb.Append($" --usergroup={q(conn.UserGroup)}");
         if (!string.IsNullOrEmpty(conn.Protocol))
             sb.Append($" --protocol={q(conn.Protocol)}");
-        if (!string.IsNullOrEmpty(conn.ServerCert))
-            sb.Append($" --servercert={q(conn.ServerCert)}");
+        // 解決済みのサーバ証明書 pin（手動指定 or 自動ピン留め）。これにより証明書プロンプトを回避する。
+        if (!string.IsNullOrEmpty(serverCertPin))
+            sb.Append($" --servercert={q(serverCertPin)}");
 
         sb.Append($" {q(conn.Host)}");
         // openconnectの出力をログへ取得し、終了コードを保持したまま一時ファイルを削除する。
