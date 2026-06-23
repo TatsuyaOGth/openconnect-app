@@ -22,12 +22,13 @@ public partial class ConfirmDialog : Window
         if (owner != null)
         {
             await dialog.ShowDialog(owner);
+            return dialog._result;
         }
-        else
-        {
-            dialog.Show();
-        }
-        return dialog._result;
+
+        var tcs = new TaskCompletionSource<bool>();
+        dialog.Closed += (_, _) => tcs.TrySetResult(dialog._result);
+        dialog.Show();
+        return await tcs.Task;
     }
 
     private void OkButton_Click(object? sender, RoutedEventArgs e)

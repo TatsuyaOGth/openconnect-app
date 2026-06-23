@@ -13,6 +13,7 @@ public partial class SettingsViewModel : ViewModelBase
 
     private ICredentialStore? _credentialStore;
     private AppConfig _config = new();
+    private bool _suppressUseKeychainHandler;
 
     public event Action<string>? ErrorOccurred;
     public event Action<string>? InfoOccurred;
@@ -46,14 +47,14 @@ public partial class SettingsViewModel : ViewModelBase
         _config = config;
 
         // UI に現在値をセット
+        _suppressUseKeychainHandler = true;
         Username = config.CommonUsername;
         UseKeychain = config.CredentialStoreType == "keychain";
         OpenConnectPath = config.OpenConnectPath ?? string.Empty;
         VpncScriptPath = config.VpncScriptPath ?? string.Empty;
+        _suppressUseKeychainHandler = false;
 
-        var creds = credentialStore.Load();
-        if (creds.HasValue)
-            Password = creds.Value.Password;
+        _ = LoadPasswordAsync(credentialStore);
     }
 
     /// <summary>
@@ -68,7 +69,9 @@ public partial class SettingsViewModel : ViewModelBase
 
         try
         {
-            _credentialStore.Save(Username, Password);
+            var username = Username;
+            var password = Password;
+            await Task.Run(() => _credentialStore.Save(username, password));
             _config.CommonUsername = Username;
             _configService.Save(_config);
             InfoOccurred?.Invoke("認証情報を保存しました。");
@@ -96,12 +99,13 @@ public partial class SettingsViewModel : ViewModelBase
     {
         try
         {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            var psi = new System.Diagnostics.ProcessStartInfo
             {
                 FileName = "open",
-                Arguments = _configService.CsvPath,
                 UseShellExecute = false,
-            });
+            };
+            psi.ArgumentList.Add(_configService.CsvPath);
+            System.Diagnostics.Process.Start(psi);
         }
         catch (Exception ex)
         {
@@ -128,36 +132,66 @@ public partial class SettingsViewModel : ViewModelBase
                     "パスワードが暗号化されずにディスク上に保存されます。共有環境のマシンでは使用しないでください。");
                 if (!confirmed)
                 {
-                    // キャンセルされたら元のUI状態に戻す
+                    // キャンセルされたら元のUI状態に戻す（再帰防止）
+                    _suppressUseKeychainHandler = true;
                     UseKeychain = true;
+                    _suppressUseKeychainHandler = false;
                     return;
                 }
             }
         }
 
-        // 旧ストアから認証情報を取得
-        var oldCreds = _credentialStore.Load();
-
-        // 新ストアを生成
+        var oldStore = _credentialStore;
         var newStore = toPlaintext ? plaintextFactory() : keychainFactory();
 
-        // 旧ストアの認証情報を新ストアにコピー
-        if (oldCreds.HasValue)
-            newStore.Save(oldCreds.Value.Username, oldCreds.Value.Password);
+        await Task.Run(() =>
+        {
+            // 旧ストアから認証情報を取得して新ストアへ移行する
+            var oldCreds = oldStore.Load();
+            if (oldCreds.HasValue)
+                newStore.Save(oldCreds.Value.Username, oldCreds.Value.Password);
 
-        // 旧ストアをクリア
-        _credentialStore.Clear();
+            oldStore.Clear();
 
-        // 平文→Keychain切替時はファイル削除は Clear() が行う
+            _config.CredentialStoreType = toPlaintext ? "plaintext" : "keychain";
+            _configService.Save(_config);
+        });
+
         _credentialStore = newStore;
-
-        // 設定を更新
-        _config.CredentialStoreType = toPlaintext ? "plaintext" : "keychain";
-        _configService.Save(_config);
 
         InfoOccurred?.Invoke($"認証ストアを {(toPlaintext ? "平文" : "Keychain")} に切り替えました。");
         _logger.Log($"認証ストア切替: {_config.CredentialStoreType}");
     }
 
     public ICredentialStore? CurrentCredentialStore => _credentialStore;
+
+    private async Task LoadPasswordAsync(ICredentialStore credentialStore)
+    {
+        try
+        {
+            var creds = await Task.Run(() => credentialStore.Load());
+            if (creds.HasValue)
+                Password = creds.Value.Password;
+        }
+        catch (Exception ex)
+        {
+            _logger.Log("認証情報の読み込みに失敗しました", ex);
+        }
+    }
+
+    partial void OnUseKeychainChanged(bool value)
+    {
+        if (_suppressUseKeychainHandler || _credentialStore == null)
+            return;
+
+        _ = HandleCredentialStoreSwitchAsync(value);
+    }
+
+    private Task HandleCredentialStoreSwitchAsync(bool useKeychain)
+    {
+        return SwitchCredentialStoreAsync(
+            toPlaintext: !useKeychain,
+            plaintextFactory: () => new PlaintextCredentialStore(_configService.PlainCredentialPath, Username),
+            keychainFactory: () => new KeychainCredentialStore());
+    }
 }

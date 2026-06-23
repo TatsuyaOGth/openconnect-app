@@ -19,8 +19,11 @@ public partial class AlertDialog : Window
         var dialog = new AlertDialog(message, title);
         if (owner != null)
             return dialog.ShowDialog(owner);
+
+        var tcs = new TaskCompletionSource();
+        dialog.Closed += (_, _) => tcs.TrySetResult();
         dialog.Show();
-        return Task.CompletedTask;
+        return tcs.Task;
     }
 
     private void OkButton_Click(object? sender, RoutedEventArgs e)

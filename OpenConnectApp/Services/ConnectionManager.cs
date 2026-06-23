@@ -87,7 +87,7 @@ public class ConnectionManager : IDisposable
         string? tmpFile = null;
         try
         {
-            var creds = credentialStore.Load()
+            var creds = await Task.Run(() => credentialStore.Load())
                 ?? throw new InvalidOperationException("認証情報が保存されていません。設定タブでユーザー名とパスワードを入力してください。");
 
             // パスワードを一時ファイルに書き込む（権限600）

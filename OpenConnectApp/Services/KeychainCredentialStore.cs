@@ -58,9 +58,13 @@ public class KeychainCredentialStore : ICredentialStore
 
     private static string ExtractValue(string line)
     {
-        var idx = line.IndexOf('"');
-        if (idx < 0) return string.Empty;
-        var val = line.Substring(idx + 1).TrimEnd('"');
+        var idx = line.IndexOf('=');
+        if (idx < 0 || idx + 1 >= line.Length) return string.Empty;
+
+        var val = line[(idx + 1)..].Trim();
+        if (val.Length >= 2 && val[0] == '"' && val[^1] == '"')
+            val = val[1..^1];
+
         return val;
     }
 
