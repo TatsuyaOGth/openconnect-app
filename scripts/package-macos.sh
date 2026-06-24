@@ -18,7 +18,7 @@ cd "$PROJECT_DIR"
 echo "==> dotnet publish ($CONFIG / $RID)"
 dotnet publish -r "$RID" -c "$CONFIG" --self-contained true -p:PublishSingleFile=true
 
-PUBLISH_DIR="bin/$CONFIG/net9.0/$RID/publish"
+PUBLISH_DIR="bin/$CONFIG/net10.0/$RID/publish"
 APP_BUNDLE="$PUBLISH_DIR/$APP_NAME.app"
 
 echo "==> .app バンドルを構築: $APP_BUNDLE"

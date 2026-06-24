@@ -63,7 +63,7 @@ public class ConnectionManager : IDisposable
         if (File.Exists(pidPath))
         {
             var pidText = File.ReadAllText(pidPath).Trim();
-            if (int.TryParse(pidText, out int pid) && IsProcessAlive(pid))
+            if (int.TryParse(pidText, out int pid) && IsOpenConnectProcessAlive(pid))
             {
                 var config = _configService.Load();
                 ConnectedName = config.LastConnectedName ?? "不明";
@@ -280,16 +280,44 @@ public class ConnectionManager : IDisposable
             var command = $"kill -INT {OsascriptPrivilegedExecutor.ShellQuote(pidText)}";
             await _executor.RunAsync(command, TimeSpan.FromSeconds(10));
 
-            TryDeletePidFile();
-            ConnectedName = null;
-            SetStatus(ConnectionStatus.Disconnected, null);
-            _logger.Log("切断完了");
+            // SIGINT 送出後、実際にプロセスが終了するまで待つ。終了を確認できてから
+            // PIDファイルを消す（残存している間は消さず、後から kill できるようにする）。
+            if (int.TryParse(pidText, out int pid))
+                await WaitForProcessExitAsync(pid, TimeSpan.FromSeconds(10));
+
+            if (TryDeletePidFileIfDead())
+            {
+                ConnectedName = null;
+                SetStatus(ConnectionStatus.Disconnected, null);
+                _logger.Log("切断完了");
+            }
+            else
+            {
+                // プロセスがまだ生きている＝実態は接続中。未接続と誤表示せず接続状態を維持し、
+                // 監視を再開して終了を検知する。ユーザーには残存をエラー通知で知らせる。
+                _logger.Log("切断信号を送りましたが openconnect プロセスが残存しています。監視を継続します。");
+                _pollingTimer.Start();
+                SetStatus(ConnectionStatus.Connected, ConnectedName,
+                    "切断信号を送りましたが openconnect プロセスがまだ残存しています。"
+                    + "PIDファイルは保持しています。ログを確認してください。");
+            }
         }
         catch (Exception ex)
         {
             _logger.Log("切断エラー", ex);
-            SetStatus(ConnectionStatus.Disconnected, null, ex.Message);
-            TryDeletePidFile();
+            // kill がキャンセル・失敗した場合、プロセスが生きたまま PIDファイルを消すと
+            // 孤立化するため、生存確認できる間は PIDファイルを残す。
+            if (TryDeletePidFileIfDead())
+            {
+                ConnectedName = null;
+                SetStatus(ConnectionStatus.Disconnected, null, ex.Message);
+            }
+            else
+            {
+                // プロセスが残存している場合は接続状態を維持し、監視を継続する。
+                _pollingTimer.Start();
+                SetStatus(ConnectionStatus.Connected, ConnectedName, ex.Message);
+            }
         }
     }
 
@@ -316,7 +344,8 @@ public class ConnectionManager : IDisposable
         }
         finally
         {
-            TryDeletePidFile();
+            // 強制切断後もプロセスが残存している場合は、PID を見失わないよう PIDファイルを残す。
+            TryDeletePidFileIfDead();
             ConnectedName = null;
             SetStatus(ConnectionStatus.Disconnected, null);
         }
@@ -334,7 +363,7 @@ public class ConnectionManager : IDisposable
         }
 
         var pidText = File.ReadAllText(pidPath).Trim();
-        if (!int.TryParse(pidText, out int pid) || !IsProcessAlive(pid))
+        if (!int.TryParse(pidText, out int pid) || !IsOpenConnectProcessAlive(pid))
         {
             _pollingTimer.Stop();
             TryDeletePidFile();
@@ -397,7 +426,7 @@ public class ConnectionManager : IDisposable
         }
 
         // 1. 該当 PID が生存していれば SIGINT でクリーン切断し、終了を待つ。
-        if (pid is int target && IsProcessAlive(target))
+        if (pid is int target && IsOpenConnectProcessAlive(target))
         {
             try
             {
@@ -425,7 +454,8 @@ public class ConnectionManager : IDisposable
         if (allowFallback)
             await FallbackKillAsync(host);
 
-        TryDeletePidFile();
+        // フォールバック後も残存している可能性があるため、終了を確認できる場合のみ削除する。
+        TryDeletePidFileIfDead();
     }
 
     private async Task FallbackKillAsync(string host)
@@ -450,11 +480,11 @@ public class ConnectionManager : IDisposable
         var deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
         {
-            if (!IsProcessAlive(pid))
+            if (!IsOpenConnectProcessAlive(pid))
                 return true;
             await Task.Delay(300);
         }
-        return !IsProcessAlive(pid);
+        return !IsOpenConnectProcessAlive(pid);
     }
 
     /// <summary>PIDファイルが生成され、プロセスが生存するまで最大 timeout 待つ。</summary>
@@ -467,7 +497,7 @@ public class ConnectionManager : IDisposable
             if (File.Exists(pidPath))
             {
                 var pidText = File.ReadAllText(pidPath).Trim();
-                if (int.TryParse(pidText, out int pid) && IsProcessAlive(pid))
+                if (int.TryParse(pidText, out int pid) && IsOpenConnectProcessAlive(pid))
                     return true;
             }
             await Task.Delay(300);
@@ -515,20 +545,30 @@ public class ConnectionManager : IDisposable
         return $"{baseMessage}\n\nopenconnect 出力:\n{tail}";
     }
 
-    private static bool IsProcessAlive(int pid)
+    /// <summary>
+    /// 指定 PID のプロセスが「生存し、かつ openconnect である」場合のみ true を返す。
+    /// 単なる PID 存在チェック（ps -p）だと、openconnect 終了後に OS が同じ PID を
+    /// 無関係なプロセスへ再利用した際に誤検知し、PIDファイルが消えず・誤って接続中と
+    /// 復元される。コマンド名まで照合して PID 再利用による誤検知を防ぐ。
+    /// </summary>
+    private static bool IsOpenConnectProcessAlive(int pid)
     {
         try
         {
             using var proc = new Process();
-            proc.StartInfo = new ProcessStartInfo("ps", $"-p {pid}")
+            // -o comm= でヘッダなしに実行ファイル名（フルパス）を取得する。
+            proc.StartInfo = new ProcessStartInfo("ps", $"-p {pid} -o comm=")
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
             };
             proc.Start();
+            var comm = proc.StandardOutput.ReadToEnd();
             proc.WaitForExit();
-            return proc.ExitCode == 0;
+            if (proc.ExitCode != 0)
+                return false;
+            return comm.Contains("openconnect", StringComparison.OrdinalIgnoreCase);
         }
         catch
         {
@@ -539,6 +579,47 @@ public class ConnectionManager : IDisposable
     private void TryDeletePidFile()
     {
         try { File.Delete(_configService.PidFilePath); } catch { }
+    }
+
+    /// <summary>
+    /// PIDファイルを削除する。ただし参照先 openconnect プロセスがまだ生存している場合は削除しない。
+    /// openconnect は osascript 経由で root 権限のデーモンとして起動するため、PID を見失うと
+    /// 後からそのプロセスを特定・kill できず（アクティビティモニターにも出ず）孤立化する。
+    /// これを防ぐため「プロセスの終了を確認できるまで PIDファイルは残す」を保証する。
+    /// </summary>
+    /// <returns>削除できた（=プロセスは生存していない）場合 true、生存中で保持した場合 false。</returns>
+    private bool TryDeletePidFileIfDead()
+    {
+        var pidPath = _configService.PidFilePath;
+        try
+        {
+            if (!File.Exists(pidPath))
+                return true;
+
+            var pidText = File.ReadAllText(pidPath).Trim();
+            // PID が壊れていて手がかりにならない場合は削除して構わない。
+            if (!int.TryParse(pidText, out int pid))
+            {
+                File.Delete(pidPath);
+                return true;
+            }
+
+            // まだ生存している場合は削除せず、後から kill できるよう PID を保持する。
+            if (IsOpenConnectProcessAlive(pid))
+            {
+                _logger.Log(
+                    $"警告: openconnect (PID:{pid}) がまだ生存しているため PIDファイルを保持します。" +
+                    $"手動で切断する場合: sudo kill -INT {pid}");
+                return false;
+            }
+
+            File.Delete(pidPath);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private void SetStatus(ConnectionStatus status, string? name, string? errorMessage = null)

@@ -1,14 +1,16 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net9.0</TargetFramework>
-    <RuntimeIdentifier>osx-arm64</RuntimeIdentifier>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
-    <!-- Release publish settings -->
-    <SelfContained>true</SelfContained>
+    <!-- macOS 向け Release publish 設定。Debug/テスト時は RID を固定せず、
+         macOS 以外（CI/Web 環境など）でもビルド・テストできるようにする。
+         .app バンドル化は scripts/package-macos.sh が Release + 明示 -r で行う。 -->
+    <RuntimeIdentifier Condition="'$(Configuration)' == 'Release'">osx-arm64</RuntimeIdentifier>
+    <SelfContained Condition="'$(Configuration)' == 'Release'">true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
   </PropertyGroup>
 
@@ -26,6 +28,6 @@
       <PrivateAssets Condition="'$(Configuration)' != 'Debug'">All</PrivateAssets>
     </PackageReference>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0" />
   </ItemGroup>
 </Project>
